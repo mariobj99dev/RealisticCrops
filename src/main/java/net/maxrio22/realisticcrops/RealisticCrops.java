@@ -20,7 +20,8 @@ public class RealisticCrops {
         modEventBus.addListener(this::commonSetup);
 
         // Registro de eventos en el bus de Forge, adecuado para eventos de nivel de juego
-        MinecraftForge.EVENT_BUS.register(new CropGrowthHandler());
+        MinecraftForge.EVENT_BUS.register(CropGrowthHandler.class);
+        // MinecraftForge.EVENT_BUS.register(new CropGrowthHandler());
 
         LOGGER.info("RealisticCrops: Mod inicializado en el servidor.");
     }

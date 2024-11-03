@@ -15,60 +15,83 @@ import net.minecraftforge.fml.common.Mod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
 @Mod.EventBusSubscriber(modid = RealisticCrops.MOD_ID, value = Dist.DEDICATED_SERVER)
 public class CropGrowthHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RealisticCrops.MOD_ID);
-    private static final int GROWTH_INTERVAL_TICKS = 25; // Cada 25 ticks, el cultivo aumenta de edad
-    private static BlockPos currentCropPos = null;
-    private static int tickCounter = 0; // Contador de ticks para controlar el crecimiento
+    private static final long TOTAL_GROWTH_MILLISECONDS = Utils.timeToMilliseconds("10s"); // Tiempo total de crecimiento en milisegundos
+    private static final Map<BlockPos, Long> cropStartTimes = new HashMap<>(); // Guarda el tiempo de inicio de cada cultivo
+    private static final Map<BlockPos, Long> growthIntervals = new HashMap<>(); // Intervalo en milisegundos para cada cultivo
 
     @SubscribeEvent
     public static void onCropPlanted(BlockEvent.EntityPlaceEvent event) {
-        // Verificamos si estamos en el servidor y si el jugador plantó el cultivo
         if (!(event.getLevel() instanceof ServerLevel world) || !(event.getEntity() instanceof Player)) return;
 
         BlockPos pos = event.getPos();
         BlockState state = event.getPlacedBlock();
         Block block = state.getBlock();
 
-        // Si el bloque es un cultivo, inicializamos el crecimiento
-        if (block instanceof CropBlock) {
-            currentCropPos = pos;
-            tickCounter = 0; // Reiniciamos el contador de ticks para el nuevo cultivo
-            LOGGER.info("onCropPlanted: Semilla plantada en posición {}. Crecimiento programado cada {} ticks.", pos, GROWTH_INTERVAL_TICKS);
+        if (block instanceof CropBlock cropBlock) {
+            int maxAge = cropBlock.getMaxAge();
+            long growthIntervalMillis = TOTAL_GROWTH_MILLISECONDS / maxAge; // Intervalo en milisegundos
+
+            cropStartTimes.put(pos, System.currentTimeMillis()); // Tiempo de inicio del cultivo
+            growthIntervals.put(pos, growthIntervalMillis); // Guardamos el intervalo de crecimiento
+
+            LOGGER.info("onCropPlanted: Semilla plantada en posición {}. Crecerá cada {} ms.", pos, growthIntervalMillis);
         }
     }
 
     @SubscribeEvent
-    public static void onWorldTick(TickEvent.LevelTickEvent event) {
-        // Verificar que estamos en el servidor y que es el final del tick
-        if (!(event.level instanceof ServerLevel world) || event.phase != TickEvent.Phase.END || currentCropPos == null) return;
+    public static void onLevelTick(TickEvent.LevelTickEvent event) {
+        if (!(event.level instanceof ServerLevel world) || event.phase != TickEvent.Phase.END) return;
 
-        tickCounter++; // Incrementamos el contador de ticks
+        long currentTime = System.currentTimeMillis(); // Tiempo actual
 
-        // Si el contador de ticks ha alcanzado el intervalo de crecimiento
-        if (tickCounter >= GROWTH_INTERVAL_TICKS) {
-            BlockState state = world.getBlockState(currentCropPos);
+        Iterator<Map.Entry<BlockPos, Long>> iterator = cropStartTimes.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<BlockPos, Long> entry = iterator.next();
+            BlockPos pos = entry.getKey();
+            long startTime = entry.getValue();
+            long growthIntervalMillis = growthIntervals.get(pos);
 
-            // Verificar que el bloque sigue siendo un cultivo
+            // Tiempo transcurrido desde que se plantó el cultivo
+            long elapsedTime = currentTime - startTime;
+            BlockState state = world.getBlockState(pos);
+
             if (state.getBlock() instanceof CropBlock cropBlock) {
                 IntegerProperty ageProperty = CropBlock.AGE;
+
+                // Verifica si el bloque tiene la propiedad 'age'
+                if (!state.hasProperty(ageProperty)) {
+                    LOGGER.warn("El bloque en posición {} no tiene la propiedad 'age'. Ignorando crecimiento.", pos);
+                    continue;
+                }
+
                 int age = state.getValue(ageProperty);
                 int maxAge = cropBlock.getMaxAge();
 
-                // Incrementar la edad si no ha alcanzado la madurez
-                if (age < maxAge) {
-                    BlockState newState = state.setValue(ageProperty, age + 1);
-                    world.setBlock(currentCropPos, newState, 2);
-                    LOGGER.info("onWorldTick: Cultivo en posición {} ha crecido a edad {}.", currentCropPos, age + 1);
-                } else {
-                    LOGGER.info("onWorldTick: Cultivo en posición {} ha alcanzado la edad máxima {} y continuará maduro.", currentCropPos, maxAge);
-                    currentCropPos = null; // Detenemos el seguimiento del cultivo al alcanzar la edad máxima
+                // Calcula la edad esperada del cultivo en función del tiempo transcurrido
+                int expectedAge = Math.min((int) (elapsedTime / growthIntervalMillis), maxAge);
+
+                if (expectedAge > age) {
+                    // Actualiza la edad del cultivo solo si ha alcanzado la siguiente etapa
+                    BlockState newState = state.setValue(ageProperty, expectedAge);
+                    world.setBlock(pos, newState, 2);
+                    LOGGER.info("onLevelTick: Cultivo en posición {} ha crecido a edad {}.", pos, expectedAge);
+                }
+
+                // Detener el crecimiento si ha alcanzado la edad máxima
+                if (expectedAge >= maxAge) {
+                    iterator.remove();
+                    growthIntervals.remove(pos);
+                    LOGGER.info("onLevelTick: Cultivo en posición {} ha alcanzado la edad máxima {} y se detendrá el crecimiento.", pos, maxAge);
                 }
             }
-
-            tickCounter = 0; // Reiniciamos el contador de ticks para el próximo crecimiento
         }
     }
 }
+
